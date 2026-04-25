@@ -12,9 +12,10 @@
   
   --success: #10b981;
   --danger: #ef4444;
+  --warning: #f59e0b;
   
   /* Glassmorphism */
-  --glass-border: rgba(255, 255, 255, 0.05);
+  --glass-border: rgba(255, 255, 255, 0.08);
   --glass-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.3);
   
   /* Layout */
@@ -25,6 +26,8 @@
   /* Typography */
   --font-family: 'Inter', system-ui, -apple-system, sans-serif;
 }
+
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
 
 * {
   box-sizing: border-box;
@@ -40,7 +43,7 @@ body {
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   min-height: 100vh;
-  overflow: hidden; /* App should fill the screen */
+  overflow: hidden;
   background-image: 
     radial-gradient(circle at 15% 50%, rgba(99, 102, 241, 0.08), transparent 25%),
     radial-gradient(circle at 85% 30%, rgba(139, 92, 246, 0.08), transparent 25%);
@@ -54,18 +57,18 @@ body {
 
 /* Scrollbar styling */
 ::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
+  width: 6px;
+  height: 6px;
 }
 ::-webkit-scrollbar-track {
-  background: var(--bg-primary);
+  background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-  background: var(--bg-secondary);
+  background: rgba(255, 255, 255, 0.1);
   border-radius: var(--radius-sm);
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: var(--text-secondary);
+  background: rgba(255, 255, 255, 0.2);
 }
 
 /* Reusable Glass Utility */
@@ -78,11 +81,12 @@ body {
   border-radius: var(--radius-lg);
 }
 
-/* Buttons */
+/* ── Buttons ── */
 .btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  gap: 0.4rem;
   padding: 0.5rem 1rem;
   border-radius: var(--radius-sm);
   font-weight: 500;
@@ -91,6 +95,7 @@ body {
   transition: all 0.2s ease;
   border: none;
   font-size: 0.9rem;
+  white-space: nowrap;
 }
 
 .btn-primary {
@@ -98,10 +103,24 @@ body {
   color: white;
   box-shadow: 0 4px 12px var(--accent-glow);
 }
-
-.btn-primary:hover {
+.btn-primary:hover:not(:disabled) {
   background-color: var(--accent-hover);
   transform: translateY(-1px);
+}
+.btn-primary:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.btn-danger-outline {
+  background: transparent;
+  color: var(--danger);
+  border: 1px solid var(--danger);
+  font-size: 0.8rem;
+  padding: 0.35rem 0.75rem;
+}
+.btn-danger-outline:hover {
+  background: rgba(239, 68, 68, 0.15);
 }
 
 .btn-icon {
@@ -112,14 +131,38 @@ body {
   height: 40px;
   padding: 0;
   border-radius: var(--radius-md);
+  cursor: pointer;
+  transition: all 0.2s ease;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.1rem;
 }
-
 .btn-icon:hover {
   background: rgba(255, 255, 255, 0.1);
 }
-
 .btn-icon.active {
   background: var(--accent-primary);
   border-color: var(--accent-primary);
   box-shadow: 0 0 15px var(--accent-glow);
+}
+.btn-icon.mini {
+  width: 28px;
+  height: 28px;
+  font-size: 0.8rem;
+  border-radius: var(--radius-sm);
+}
+
+/* ── Status dot ── */
+.status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  animation: pulse 2s infinite;
+  flex-shrink: 0;
+}
+@keyframes pulse {
+  0% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.5; transform: scale(0.8); }
+  100% { opacity: 1; transform: scale(1); }
 }
