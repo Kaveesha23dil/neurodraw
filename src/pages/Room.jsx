@@ -16,7 +16,7 @@ export default function Room() {
   const navigate = useNavigate();
   const {
     connected, inRoom, joinRoom, leaveRoom,
-    roomId, username, users, error,
+    roomId, users, error,
     socketRef,
   } = useRoom();
 
@@ -30,10 +30,8 @@ export default function Room() {
   useEffect(() => {
     if (hasJoined.current) return;
     hasJoined.current = true;
-
-    const uname = location.state?.username || `Guest-${Math.floor(1000 + Math.random() * 9000)}`;
-    joinRoom(paramRoomId, uname);
-  }, [paramRoomId, location.state, joinRoom]);
+    joinRoom(paramRoomId);
+  }, [paramRoomId, joinRoom]);
 
   // Track unread messages when chat is closed
   const { chatHistory } = useRoom();

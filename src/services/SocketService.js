@@ -10,10 +10,12 @@ let socket = null;
  */
 export const getSocket = () => {
   if (!socket || socket.disconnected) {
+    const token = localStorage.getItem('token');
     socket = io(SOCKET_URL, {
       transports: ['websocket', 'polling'],
       reconnectionAttempts: 5,
       reconnectionDelay: 1000,
+      auth: { token }
     });
   }
   return socket;

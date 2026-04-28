@@ -1,5 +1,6 @@
 import { createContext, useContext, useState, useRef, useEffect, useCallback } from 'react';
 import { getSocket, disconnectSocket } from '../services/SocketService';
+import { useAuth } from './AuthContext';
 
 const RoomContext = createContext(null);
 
@@ -32,8 +33,14 @@ export function RoomProvider({ children }) {
   const socketRef = useRef(null);
   const userStreamRef = useRef(null);
 
-  // ── Initialise socket on mount ──
+  const { token } = useAuth();
+
+  // ── Initialise socket on mount or token change ──
   useEffect(() => {
+    // Only connect if we have a token (user is logged in)
+    if (!token) return;
+
+    disconnectSocket(); // Ensure any old connection is destroyed
     const socket = getSocket();
     socketRef.current = socket;
 
@@ -45,15 +52,16 @@ export function RoomProvider({ children }) {
     return () => {
       disconnectSocket();
     };
-  }, []);
+  }, [token]);
 
   // ── Join room ──
-  const joinRoom = useCallback((rid, uname) => {
+  const joinRoom = useCallback((rid) => {
     const socket = socketRef.current;
     if (!socket) return;
 
     setRoomId(rid);
-    setUsername(uname);
+    // Username will be set by the server response or we can ignore local state, but let's clear it
+    setUsername('');
 
     // ── Room state on join ──
     socket.on('room-state', (state) => {
@@ -105,7 +113,7 @@ export function RoomProvider({ children }) {
     });
 
     // Emit join
-    socket.emit('join-room', rid, uname || undefined);
+    socket.emit('join-room', rid);
     setInRoom(true);
   }, []);
 

@@ -75,8 +75,16 @@ module.exports = (io, socket, rooms) => {
     if (activeSection) {
       // Save stroke to memory
       activeSection.strokes.push(strokeData);
+
+      // Include username in the broadcasted event
+      const strokeWithUser = {
+        ...strokeData,
+        userId: socket.id,
+        username: socket.user.username
+      };
+
       // Broadcast to everyone else
-      socket.to(roomId).emit('draw', strokeData);
+      socket.to(roomId).emit('draw', strokeWithUser);
     }
   });
 
