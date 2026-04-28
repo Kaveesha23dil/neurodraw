@@ -1,4 +1,5 @@
 const logger = require('../utils/logger');
+const { authenticateSocket } = require('../middleware/authMiddleware');
 
 // Import modular handlers
 const registerRoomHandlers = require('./room');
@@ -28,8 +29,11 @@ const chatRateLimits = new Map();
  * @param {import('socket.io').Server} io 
  */
 const initSockets = (io) => {
+  // Apply authentication middleware
+  io.use(authenticateSocket);
+
   io.on('connection', (socket) => {
-    logger.info(`New client connected: ${socket.id}`);
+    logger.info(`New client connected: ${socket.id} (User: ${socket.user.username})`);
 
     // Register handlers and pass dependencies (io, socket, state)
     registerRoomHandlers(io, socket, rooms, chatRateLimits);

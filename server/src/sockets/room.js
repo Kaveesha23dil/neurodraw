@@ -15,8 +15,8 @@ module.exports = (io, socket, rooms, chatRateLimits) => {
     socket.join(roomId);
     socket.roomId = roomId;
 
-    // Generate basic username if not provided
-    const username = requestedUsername || `Guest-${Math.floor(1000 + Math.random() * 9000)}`;
+    // Use username from JWT
+    const username = socket.user.username;
 
     // Initialize room state if it doesn't exist
     if (!rooms[roomId]) {
