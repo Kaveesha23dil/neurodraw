@@ -2,25 +2,46 @@ import { useEffect, useRef, useState, useCallback } from 'react';
 import { useRoom } from '../context/RoomContext';
 import GestureController from '../services/GestureService';
 import {
-  Pencil, Eraser, Undo2, Trash2, Hand, HandMetal, Minus, Plus
+  Pencil, Eraser, Undo2, Trash2, Hand, HandMetal, Minus, Plus, Camera, CameraOff
 } from 'lucide-react';
 
 export default function Whiteboard() {
   const { socketRef, activeSection, sections, inRoom } = useRoom();
   const canvasRef = useRef(null);
+  
+  // State refs for drawing
   const localStrokesRef = useRef([]);
   const lastPoint = useRef(null);
   const gestureLastPoint = useRef(null);
+  const lastDrawTime = useRef(0);
 
+  // UI state
   const [isDrawing, setIsDrawing] = useState(false);
   const [activeTool, setActiveTool] = useState('pen');
   const [strokeColor, setStrokeColor] = useState('#a78bfa');
   const [strokeWidth, setStrokeWidth] = useState(3);
+  
+  // Gesture state
   const [gestureMode, setGestureMode] = useState(false);
-  const [gestureStatus, setGestureStatus] = useState(''); // 'loading' | 'active' | 'error' | ''
+  const [gestureStatus, setGestureStatus] = useState('');
+  const [fingerPos, setFingerPos] = useState(null); // { x, y } in 0-1 range
+  const [isPinchActive, setIsPinchActive] = useState(false);
+  const [showCameraFeed, setShowCameraFeed] = useState(true);
 
   const gestureRef = useRef(null);
   const gestureVideoRef = useRef(null);
+  const cameraFeedRef = useRef(null); // visible <video> element in PiP
+
+  // ── Throttling utility (approx 30 FPS) ──
+  const throttle = (callback, delay) => {
+    return (...args) => {
+      const now = Date.now();
+      if (now - lastDrawTime.current >= delay) {
+        callback(...args);
+        lastDrawTime.current = now;
+      }
+    };
+  };
 
   // ── Canvas drawing helpers ──
   const drawStroke = useCallback((data) => {
@@ -31,10 +52,20 @@ export default function Whiteboard() {
     const h = canvas.height;
 
     ctx.beginPath();
-    ctx.moveTo(data.from.x * w, data.from.y * h);
-    ctx.lineTo(data.to.x * w, data.to.y * h);
+    
+    // Smoothing: Midpoint averaging
+    const midX = (data.prevX + data.x) / 2;
+    const midY = (data.prevY + data.y) / 2;
+    
+    // Move to the previous point
+    ctx.moveTo(data.prevX * w, data.prevY * h);
+    // Draw a quadratic curve to the midpoint
+    ctx.quadraticCurveTo(data.prevX * w, data.prevY * h, midX * w, midY * h);
+    // Draw a line to the current point
+    ctx.lineTo(data.x * w, data.y * h);
+    
     ctx.strokeStyle = data.color;
-    ctx.lineWidth = data.width;
+    ctx.lineWidth = data.lineWidth;
     ctx.lineCap = 'round';
     ctx.lineJoin = 'round';
     ctx.stroke();
@@ -58,6 +89,8 @@ export default function Whiteboard() {
     if (!socket) return;
 
     const handleDraw = (strokeData) => {
+      // Broadcast: Only within active section
+      if (strokeData.sectionId !== activeSection) return;
       localStrokesRef.current.push(strokeData);
       drawStroke(strokeData);
     };
@@ -72,16 +105,27 @@ export default function Whiteboard() {
       clearCanvasLocal();
     };
 
+    const handleRemoteUndo = () => {
+      // This is hit if the server sends an explicit undo event
+      // However, server usually sends canvas-state-sync
+      if (localStrokesRef.current.length > 0) {
+        localStrokesRef.current.pop();
+        redrawCanvas(localStrokesRef.current);
+      }
+    };
+
     socket.on('draw', handleDraw);
     socket.on('canvas-state-sync', handleSync);
     socket.on('clear-canvas', handleClear);
+    socket.on('undo', handleRemoteUndo);
 
     return () => {
       socket.off('draw', handleDraw);
       socket.off('canvas-state-sync', handleSync);
       socket.off('clear-canvas', handleClear);
+      socket.off('undo', handleRemoteUndo);
     };
-  }, [socketRef, drawStroke, redrawCanvas, clearCanvasLocal]);
+  }, [socketRef, activeSection, drawStroke, redrawCanvas, clearCanvasLocal]);
 
   // ── Redraw when section changes ──
   useEffect(() => {
@@ -128,23 +172,37 @@ export default function Whiteboard() {
     lastPoint.current = getCanvasPoint(e);
   };
 
+  const throttledDraw = useCallback(
+    throttle((point, prevPoint, color, width, sectionId) => {
+      const strokeData = {
+        x: point.x,
+        y: point.y,
+        prevX: prevPoint.x,
+        prevY: prevPoint.y,
+        color,
+        lineWidth: width,
+        sectionId
+      };
+
+      drawStroke(strokeData);
+      localStrokesRef.current.push(strokeData);
+      socketRef.current?.emit('draw', strokeData);
+    }, 33), // Throttle to approx 30 FPS
+    [drawStroke, socketRef]
+  );
+
   const handleDraw = (e) => {
     if (!isDrawing || !lastPoint.current || gestureMode) return;
     e.preventDefault();
     const point = getCanvasPoint(e);
     if (!point) return;
 
-    const strokeData = {
-      from: lastPoint.current,
-      to: point,
-      color: activeTool === 'eraser' ? '#0a0a0f' : strokeColor,
-      width: activeTool === 'eraser' ? strokeWidth * 4 : strokeWidth,
-      tool: activeTool,
-    };
+    const actualColor = activeTool === 'eraser' ? '#0a0a0f' : strokeColor;
+    const actualWidth = activeTool === 'eraser' ? strokeWidth * 4 : strokeWidth;
 
-    drawStroke(strokeData);
-    localStrokesRef.current.push(strokeData);
-    socketRef.current?.emit('draw', strokeData);
+    throttledDraw(point, lastPoint.current, actualColor, actualWidth, activeSection);
+    
+    // Always update lastPoint regardless of throttling for accurate stroke progression
     lastPoint.current = point;
   };
 
@@ -163,7 +221,15 @@ export default function Whiteboard() {
       }
       setGestureMode(false);
       setGestureStatus('');
+      setFingerPos(null);
+      setIsPinchActive(false);
       gestureLastPoint.current = null;
+      // Stop and clear PiP feed
+      if (cameraFeedRef.current) {
+        const stream = cameraFeedRef.current.srcObject;
+        if (stream) stream.getTracks().forEach(t => t.stop());
+        cameraFeedRef.current.srcObject = null;
+      }
       return;
     }
 
@@ -173,7 +239,7 @@ export default function Whiteboard() {
       const controller = new GestureController();
       gestureRef.current = controller;
 
-      // Create hidden video element for camera feed
+      // Create hidden video element for MediaPipe camera feed
       if (!gestureVideoRef.current) {
         const video = document.createElement('video');
         video.setAttribute('playsinline', '');
@@ -182,21 +248,46 @@ export default function Whiteboard() {
         gestureVideoRef.current = video;
       }
 
+      // Get camera stream and connect to PiP feed directly
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480 } });
+        if (cameraFeedRef.current) {
+          cameraFeedRef.current.srcObject = stream;
+          await cameraFeedRef.current.play().catch(() => {});
+        }
+      } catch (camErr) {
+        console.warn('Could not connect PiP feed directly:', camErr);
+      }
+
       await controller.start(gestureVideoRef.current, ({ x, y, isPinching }) => {
+        // Update visible finger cursor
+        setFingerPos({ x, y });
+        setIsPinchActive(isPinching);
+
         if (isPinching) {
           // Drawing
           const point = { x, y };
           if (gestureLastPoint.current) {
-            const strokeData = {
-              from: gestureLastPoint.current,
-              to: point,
-              color: activeTool === 'eraser' ? '#0a0a0f' : strokeColor,
-              width: activeTool === 'eraser' ? strokeWidth * 4 : strokeWidth,
-              tool: activeTool,
-            };
-            drawStroke(strokeData);
-            localStrokesRef.current.push(strokeData);
-            socketRef.current?.emit('draw', strokeData);
+            const actualColor = activeTool === 'eraser' ? '#0a0a0f' : strokeColor;
+            const actualWidth = activeTool === 'eraser' ? strokeWidth * 4 : strokeWidth;
+            
+            const now = Date.now();
+            if (now - lastDrawTime.current >= 33) {
+              const strokeData = {
+                x: point.x,
+                y: point.y,
+                prevX: gestureLastPoint.current.x,
+                prevY: gestureLastPoint.current.y,
+                color: actualColor,
+                lineWidth: actualWidth,
+                sectionId: activeSection
+              };
+              
+              drawStroke(strokeData);
+              localStrokesRef.current.push(strokeData);
+              socketRef.current?.emit('draw', strokeData);
+              lastDrawTime.current = now;
+            }
           }
           gestureLastPoint.current = point;
         } else {
@@ -207,6 +298,7 @@ export default function Whiteboard() {
 
       setGestureMode(true);
       setGestureStatus('active');
+      setShowCameraFeed(true);
     } catch (err) {
       console.error('Gesture init failed:', err);
       setGestureStatus('error');
@@ -224,8 +316,24 @@ export default function Whiteboard() {
     };
   }, []);
 
-  const handleUndo = () => socketRef.current?.emit('undo');
-  const handleClearCanvas = () => socketRef.current?.emit('clear-canvas');
+  // ── Actions ──
+  const handleUndo = () => {
+    // 7. Undo Functionality - Maintain stroke history array & remove last stroke
+    if (localStrokesRef.current.length > 0) {
+      localStrokesRef.current.pop();
+      redrawCanvas(localStrokesRef.current);
+    }
+    // Emit undo event
+    socketRef.current?.emit('undo');
+  };
+
+  const handleClearCanvas = () => {
+    // 8. Clear Canvas - Clear entire canvas
+    clearCanvasLocal();
+    localStrokesRef.current = [];
+    // Emit clear-canvas event
+    socketRef.current?.emit('clear-canvas');
+  };
 
   const colors = ['#a78bfa', '#818cf8', '#f472b6', '#34d399', '#fbbf24', '#fb923c', '#ffffff', '#ef4444'];
 
@@ -299,19 +407,53 @@ export default function Whiteboard() {
 
         <div className="tool-divider" />
 
-        {/* Gesture toggle */}
+        {/* Gesture / Finger Tracking toggle */}
         <div className="tool-section">
           <button
-            className={`tool-btn gesture-btn ${gestureMode ? 'active' : ''}`}
+            id="track-finger-btn"
+            className={`gesture-track-btn ${gestureMode ? 'active' : ''} ${gestureStatus === 'loading' ? 'loading' : ''}`}
             onClick={toggleGesture}
-            title={gestureMode ? 'Stop Gesture Drawing' : 'Start Gesture Drawing'}
+            title={gestureMode ? 'Stop Finger Tracking' : 'Activate Finger Drawing'}
+            disabled={gestureStatus === 'loading'}
           >
-            {gestureMode ? <HandMetal size={18} /> : <Hand size={18} />}
+            <span className="gesture-track-icon">
+              {gestureStatus === 'loading' ? (
+                <span className="gesture-track-spinner" />
+              ) : gestureMode ? (
+                <HandMetal size={16} />
+              ) : (
+                <Hand size={16} />
+              )}
+            </span>
+            <span className="gesture-track-label">
+              {gestureStatus === 'loading'
+                ? 'Starting…'
+                : gestureMode
+                ? 'Stop Tracking'
+                : 'Track Finger'}
+            </span>
+            {gestureMode && <span className="gesture-track-pulse" />}
           </button>
-          {gestureStatus === 'loading' && <span className="gesture-label">Loading...</span>}
-          {gestureStatus === 'active' && <span className="gesture-label active">Gesture ON</span>}
-          {gestureStatus === 'error' && <span className="gesture-label error">Camera Error</span>}
+          {gestureStatus === 'error' && (
+            <span className="gesture-label error">Camera Error</span>
+          )}
         </div>
+
+        {/* Camera feed toggle (only when active) */}
+        {gestureMode && (
+          <>
+            <div className="tool-divider" />
+            <div className="tool-section">
+              <button
+                className="tool-btn mini"
+                title={showCameraFeed ? 'Hide Camera' : 'Show Camera'}
+                onClick={() => setShowCameraFeed(v => !v)}
+              >
+                {showCameraFeed ? <CameraOff size={14} /> : <Camera size={14} />}
+              </button>
+            </div>
+          </>
+        )}
       </div>
 
       {/* ── Canvas ── */}
@@ -327,10 +469,55 @@ export default function Whiteboard() {
           onTouchMove={handleDraw}
           onTouchEnd={stopDrawing}
         />
+
+        {/* Finger cursor — follows index finger */}
+        {gestureMode && fingerPos && (
+          <div
+            className={`finger-cursor ${isPinchActive ? 'pinching' : ''}`}
+            style={{
+              left: `${fingerPos.x * 100}%`,
+              top:  `${fingerPos.y * 100}%`,
+              borderColor: isPinchActive ? strokeColor : 'rgba(167,139,250,0.9)',
+              boxShadow: isPinchActive
+                ? `0 0 0 3px ${strokeColor}55, 0 0 16px ${strokeColor}88`
+                : '0 0 0 2px rgba(99,102,241,0.4), 0 0 10px rgba(99,102,241,0.3)',
+            }}
+          >
+            {isPinchActive && (
+              <span
+                className="finger-cursor-dot"
+                style={{ background: strokeColor }}
+              />
+            )}
+          </div>
+        )}
+
+        {/* Bottom status bar */}
         {gestureMode && (
           <div className="gesture-overlay">
-            <HandMetal size={20} />
-            <span>Gesture Mode — Pinch to draw</span>
+            <HandMetal size={16} />
+            <span>
+              {isPinchActive ? '✍️ Drawing…' : 'Pinch fingers to draw'}
+            </span>
+          </div>
+        )}
+
+        {/* Picture-in-Picture camera feed */}
+        {gestureMode && showCameraFeed && (
+          <div className="gesture-camera-feed-wrap">
+            <div className="gesture-camera-header">
+              <span>📷 Hand Camera</span>
+            </div>
+            <video
+              ref={cameraFeedRef}
+              className="gesture-camera-feed"
+              autoPlay
+              muted
+              playsInline
+            />
+            {isPinchActive && (
+              <div className="gesture-camera-badge">✍️ Drawing</div>
+            )}
           </div>
         )}
       </div>
