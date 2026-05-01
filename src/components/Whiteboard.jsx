@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, useCallback } from 'react';
 import { useRoom } from '../context/RoomContext';
 import GestureController from '../services/GestureService';
 import {
-  Pencil, Eraser, Undo2, Trash2, Hand, HandMetal, Minus, Plus, Camera, CameraOff
+  Pencil, Eraser, Undo2, Trash2, Hand, HandMetal, Minus, Plus, Camera, CameraOff, Wand2
 } from 'lucide-react';
 
 export default function Whiteboard() {
@@ -14,6 +14,9 @@ export default function Whiteboard() {
   const lastPoint = useRef(null);
   const gestureLastPoint = useRef(null);
   const lastDrawTime = useRef(0);
+  const currentStrokePointsRef = useRef([]);
+  const strokeStartIndexRef = useRef(-1);
+  const drawingStateRef = useRef({ tool: 'pen', color: '#a78bfa', width: 3 });
 
   // UI state
   const [isDrawing, setIsDrawing] = useState(false);
@@ -27,6 +30,10 @@ export default function Whiteboard() {
   const [fingerPos, setFingerPos] = useState(null); // { x, y } in 0-1 range
   const [isPinchActive, setIsPinchActive] = useState(false);
   const [showCameraFeed, setShowCameraFeed] = useState(true);
+
+  useEffect(() => {
+    drawingStateRef.current = { tool: activeTool, color: strokeColor, width: strokeWidth };
+  }, [activeTool, strokeColor, strokeWidth]);
 
   const gestureRef = useRef(null);
   const gestureVideoRef = useRef(null);
@@ -82,6 +89,90 @@ export default function Whiteboard() {
     clearCanvasLocal();
     (strokes || []).forEach(s => drawStroke(s));
   }, [clearCanvasLocal, drawStroke]);
+
+  const analyzeMagicStroke = useCallback(() => {
+    const { tool, color, width } = drawingStateRef.current;
+    if (tool !== 'magic') return;
+    const points = currentStrokePointsRef.current;
+    if (points.length < 5) return;
+    
+    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+    let pathLength = 0;
+    
+    for (let i = 0; i < points.length; i++) {
+      const p = points[i];
+      if (p.x < minX) minX = p.x;
+      if (p.x > maxX) maxX = p.x;
+      if (p.y < minY) minY = p.y;
+      if (p.y > maxY) maxY = p.y;
+      
+      if (i > 0) {
+        const dx = p.x - points[i-1].x;
+        const dy = p.y - points[i-1].y;
+        pathLength += Math.sqrt(dx*dx + dy*dy);
+      }
+    }
+    
+    const w = maxX - minX;
+    const h = maxY - minY;
+    const start = points[0];
+    const end = points[points.length - 1];
+    const startEndDist = Math.sqrt(Math.pow(end.x - start.x, 2) + Math.pow(end.y - start.y, 2));
+    
+    const isClosed = startEndDist < Math.max(w, h) * 0.25;
+    
+    let newStrokes = [];
+    const sectionId = activeSection;
+
+    if (strokeStartIndexRef.current !== -1) {
+       localStrokesRef.current.splice(strokeStartIndexRef.current);
+    }
+    
+    const generateSegments = (shapePoints) => {
+      let segments = [];
+      for (let i = 1; i < shapePoints.length; i++) {
+         segments.push({
+           x: shapePoints[i].x, y: shapePoints[i].y,
+           prevX: shapePoints[i-1].x, prevY: shapePoints[i-1].y,
+           color, lineWidth: width, sectionId
+         });
+      }
+      return segments;
+    };
+
+    if (isClosed) {
+      const aspectRatio = w / h;
+      if (aspectRatio > 0.7 && aspectRatio < 1.3) {
+         const cx = minX + w/2;
+         const cy = minY + h/2;
+         const r = (w + h) / 4;
+         const steps = 36;
+         let circlePts = [];
+         for(let i=0; i<=steps; i++) {
+           const angle = (i / steps) * Math.PI * 2;
+           circlePts.push({ x: cx + Math.cos(angle)*r, y: cy + Math.sin(angle)*r });
+         }
+         newStrokes = generateSegments(circlePts);
+      } else {
+         newStrokes = generateSegments([
+           {x: minX, y: minY}, {x: maxX, y: minY},
+           {x: maxX, y: maxY}, {x: minX, y: maxY}, {x: minX, y: minY}
+         ]);
+      }
+    } else {
+      if (startEndDist > pathLength * 0.85) {
+         newStrokes = generateSegments([start, end]);
+      } else {
+         newStrokes = generateSegments(points);
+      }
+    }
+    
+    localStrokesRef.current = [...localStrokesRef.current, ...newStrokes];
+    redrawCanvas(localStrokesRef.current);
+    socketRef.current?.emit('canvas-state-update', localStrokesRef.current);
+    currentStrokePointsRef.current = [];
+    strokeStartIndexRef.current = -1;
+  }, [activeSection, redrawCanvas, socketRef]);
 
   // ── Socket listeners for whiteboard events ──
   useEffect(() => {
@@ -170,6 +261,8 @@ export default function Whiteboard() {
     e.preventDefault();
     setIsDrawing(true);
     lastPoint.current = getCanvasPoint(e);
+    currentStrokePointsRef.current = [lastPoint.current];
+    strokeStartIndexRef.current = localStrokesRef.current.length;
   };
 
   const throttledDraw = useCallback(
@@ -185,6 +278,7 @@ export default function Whiteboard() {
       };
 
       drawStroke(strokeData);
+      currentStrokePointsRef.current.push(point);
       localStrokesRef.current.push(strokeData);
       socketRef.current?.emit('draw', strokeData);
     }, 33), // Throttle to approx 30 FPS
@@ -209,6 +303,7 @@ export default function Whiteboard() {
   const stopDrawing = () => {
     setIsDrawing(false);
     lastPoint.current = null;
+    analyzeMagicStroke();
   };
 
   // ── Gesture mode ──
@@ -268,8 +363,9 @@ export default function Whiteboard() {
           // Drawing
           const point = { x, y };
           if (gestureLastPoint.current) {
-            const actualColor = activeTool === 'eraser' ? '#0a0a0f' : strokeColor;
-            const actualWidth = activeTool === 'eraser' ? strokeWidth * 4 : strokeWidth;
+            const { tool, color, width } = drawingStateRef.current;
+            const actualColor = tool === 'eraser' ? '#0a0a0f' : color;
+            const actualWidth = tool === 'eraser' ? width * 4 : width;
             
             const now = Date.now();
             if (now - lastDrawTime.current >= 33) {
@@ -284,13 +380,20 @@ export default function Whiteboard() {
               };
               
               drawStroke(strokeData);
+              currentStrokePointsRef.current.push(point);
               localStrokesRef.current.push(strokeData);
               socketRef.current?.emit('draw', strokeData);
               lastDrawTime.current = now;
             }
+          } else {
+            currentStrokePointsRef.current = [point];
+            strokeStartIndexRef.current = localStrokesRef.current.length;
           }
           gestureLastPoint.current = point;
         } else {
+          if (gestureLastPoint.current) {
+            analyzeMagicStroke();
+          }
           // Not pinching — lift pen
           gestureLastPoint.current = null;
         }
@@ -349,6 +452,13 @@ export default function Whiteboard() {
             title="Pen"
           >
             <Pencil size={18} />
+          </button>
+          <button
+            className={`tool-btn ${activeTool === 'magic' ? 'active' : ''}`}
+            onClick={() => setActiveTool('magic')}
+            title="Magic Pen (Auto-Shapes)"
+          >
+            <Wand2 size={18} />
           </button>
           <button
             className={`tool-btn ${activeTool === 'eraser' ? 'active' : ''}`}

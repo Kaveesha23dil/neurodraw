@@ -116,4 +116,17 @@ module.exports = (io, socket, rooms) => {
     }
   });
 
+  socket.on('canvas-state-update', (newStrokes) => {
+    const roomId = socket.roomId;
+    if (!roomId || !rooms[roomId]) return;
+
+    const activeSectionId = rooms[roomId].activeSection;
+    const activeSection = rooms[roomId].sections.find(s => s.id === activeSectionId);
+
+    if (activeSection) {
+      activeSection.strokes = newStrokes;
+      socket.to(roomId).emit('canvas-state-sync', newStrokes);
+    }
+  });
+
 };
