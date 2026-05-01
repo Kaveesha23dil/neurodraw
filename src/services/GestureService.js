@@ -13,7 +13,8 @@
  * Otherwise → "pen up" (cursor moves but no stroke)
  */
 
-const PINCH_THRESHOLD = 0.06;
+const PINCH_THRESHOLD = 0.12; // Increased for easier drawing
+const SMOOTHING_FACTOR = 0.4; // Smoothing factor (0 to 1), lower is smoother but lags more
 
 function loadScript(src) {
   return new Promise((resolve, reject) => {
@@ -36,11 +37,15 @@ export class GestureController {
     this.camera = null;
     this.onGestureResult = null;
     this.running = false;
+    this.lastX = null;
+    this.lastY = null;
   }
 
   async start(videoEl, callback) {
     if (this.running) return;
     this.onGestureResult = callback;
+    this.lastX = null;
+    this.lastY = null;
 
     // Load MediaPipe scripts from CDN
     await loadScript('https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js');
@@ -91,10 +96,14 @@ export class GestureController {
       this.hands = null;
     }
     this.running = false;
+    this.lastX = null;
+    this.lastY = null;
   }
 
   _processResults(results) {
     if (!results.multiHandLandmarks || results.multiHandLandmarks.length === 0) {
+      this.lastX = null;
+      this.lastY = null;
       return;
     }
 
@@ -109,11 +118,20 @@ export class GestureController {
     const isPinching = dist < PINCH_THRESHOLD;
 
     // Mirror x-axis for natural feel
-    const x = 1 - indexTip.x;
-    const y = indexTip.y;
+    const targetX = 1 - indexTip.x;
+    const targetY = indexTip.y;
+
+    // Apply exponential smoothing
+    if (this.lastX === null || this.lastY === null) {
+      this.lastX = targetX;
+      this.lastY = targetY;
+    } else {
+      this.lastX += (targetX - this.lastX) * SMOOTHING_FACTOR;
+      this.lastY += (targetY - this.lastY) * SMOOTHING_FACTOR;
+    }
 
     if (this.onGestureResult) {
-      this.onGestureResult({ x, y, isPinching });
+      this.onGestureResult({ x: this.lastX, y: this.lastY, isPinching });
     }
   }
 }
